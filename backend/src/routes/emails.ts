@@ -7,13 +7,114 @@ import { supabase } from '../db';
 
 const router = Router();
 
+// ============================================================================
+// Types
+// ============================================================================
+
+interface User {
+  id: string;
+  email: string;
+  name: string;
+  google_id: string;
+}
+
+interface UserTokens {
+  access_token: string;
+  refresh_token?: string;
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Get user's OAuth tokens from database
+ */
+async function getUserTokens(userId: string): Promise<UserTokens> {
+  const { data: userData, error: userError } = await supabase
+    .from('users')
+    .select('access_token, refresh_token')
+    .eq('id', userId)
+    .single();
+
+  if (userError || !userData?.access_token) {
+    throw new Error('Gmail access token not found. Please re-authenticate.');
+  }
+
+  return {
+    access_token: userData.access_token,
+    refresh_token: userData.refresh_token
+  };
+}
+
+/**
+ * Initialize Gmail service with user's credentials
+ */
+function initializeGmailService(tokens: UserTokens): GmailService {
+  const gmailService = new GmailService();
+  gmailService.setCredentials(tokens);
+  return gmailService;
+}
+
+/**
+ * Parse email date string to ISO format for database
+ */
+function parseEmailDate(dateString: string, emailId?: string): string {
+  try {
+    const emailDate = new Date(dateString);
+    if (isNaN(emailDate.getTime())) {
+      console.warn(`⚠️ Invalid date format${emailId ? ` for email ${emailId}` : ''}: ${dateString}, using current time`);
+      return new Date().toISOString();
+    }
+    return emailDate.toISOString();
+  } catch (dateError) {
+    console.warn(`⚠️ Error parsing date${emailId ? ` for email ${emailId}` : ''}: ${dateString}, using current time`);
+    return new Date().toISOString();
+  }
+}
+
+/**
+ * Handle Gmail API errors and return appropriate HTTP responses
+ */
+function handleGmailError(error: unknown, res: Response): void {
+  if (error instanceof Error) {
+    if (error.message.includes('invalid_grant') || error.message.includes('Token has been expired')) {
+      res.status(401).json({
+        success: false,
+        message: 'Gmail access expired. Please re-authenticate.',
+        code: 'TOKEN_EXPIRED'
+      });
+      return;
+    }
+
+    if (error.message.includes('insufficient authentication scopes')) {
+      res.status(403).json({
+        success: false,
+        message: 'Insufficient Gmail permissions. Please re-authenticate.',
+        code: 'INSUFFICIENT_SCOPE'
+      });
+      return;
+    }
+  }
+
+  res.status(500).json({
+    success: false,
+    message: 'Gmail API error',
+    error: error instanceof Error ? error.message : 'Unknown error'
+  });
+}
+
+// ============================================================================
+// Production Routes
+// ============================================================================
+
 /**
  * Import latest 10 emails from user's Gmail
  */
 router.post('/import-latest', requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user as any;
-    
+    const user = req.user as User;
+
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -29,42 +130,21 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
     });
 
     // Get user's OAuth tokens from database
-    console.log(`🔍 Looking up user in database with ID: ${user.id}`);
-    const { data: userData, error: userError } = await supabase
+    const userData = await getUserTokens(user.id);
+    const { data: userProfile } = await supabase
       .from('users')
-      .select('access_token, refresh_token, email, name')
+      .select('email, name')
       .eq('id', user.id)
       .single();
 
-    if (userError) {
-      console.error('❌ User lookup error:', userError);
-      return res.status(400).json({
-        success: false,
-        message: 'User not found in database. Please re-authenticate.',
-        error: userError.message
-      });
-    }
-
-    if (!userData?.access_token) {
-      console.error('❌ No access token found for user');
-      return res.status(400).json({
-        success: false,
-        message: 'Gmail access token not found. Please re-authenticate.'
-      });
-    }
-
     console.log('✅ Found user in database:', {
-      email: userData.email,
-      name: userData.name,
+      email: userProfile?.email,
+      name: userProfile?.name,
       hasAccessToken: !!userData.access_token
     });
 
     // Initialize Gmail service
-    const gmailService = new GmailService();
-    gmailService.setCredentials({
-      access_token: userData.access_token,
-      refresh_token: userData.refresh_token
-    });
+    const gmailService = initializeGmailService(userData);
 
     // Fetch latest 10 emails
     const emails = await gmailService.fetchLatest10Emails();
@@ -79,7 +159,8 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
           fetchedAt: new Date().toISOString(),
           imported: 0,
           archived: 0,
-          skipped: 0
+          skipped: 0,
+          archiveFailed: 0
         }
       });
     }
@@ -88,38 +169,38 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
     const aiService = new AIService();
     const emailDbService = new EmailDbService();
 
-            // Process emails: AI analysis + database storage + archiving
-            const processedEmails: any[] = [];
-            const archiveResults: { success: string[]; failed: string[] } = { success: [], failed: [] };
-            let imported = 0;
-            let skipped = 0;
+    // Process emails: AI analysis + database storage + archiving
+    const processedEmails: any[] = [];
+    const archiveResults: { success: string[]; failed: string[] } = { success: [], failed: [] };
+    let imported = 0;
+    let skipped = 0;
 
-            for (const email of emails) {
-              try {
-                // Check if email already exists in database
-                const exists = await emailDbService.emailExists(user.id, email.id);
-                if (exists) {
-                  console.log(`Email ${email.id} already exists, checking archive status...`);
-                  
-                  // Check if it's unarchived in Gmail and re-archive if needed
-                  try {
-                    const archiveStatus = await gmailService.checkArchivedStatus([email.id]);
-                    if (!archiveStatus[email.id]) {
-                      console.log(`Re-archiving previously imported email ${email.id}`);
-                      const reArchived = await gmailService.archiveEmail(email.id);
-                      if (reArchived) {
-                        console.log(`✅ Successfully re-archived ${email.id}`);
-                      } else {
-                        console.log(`⚠️ Failed to re-archive ${email.id} - might be stale ID`);
-                      }
-                    }
-                  } catch (reArchiveError) {
-                    console.log(`⚠️ Could not re-archive ${email.id} - likely stale ID:`, reArchiveError);
-                  }
-                  
-                  skipped++;
-                  continue;
-                }
+    for (const email of emails) {
+      try {
+        // Check if email already exists in database
+        const exists = await emailDbService.emailExists(user.id, email.id);
+        if (exists) {
+          console.log(`Email ${email.id} already exists, checking archive status...`);
+
+          // Check if it's unarchived in Gmail and re-archive if needed
+          try {
+            const archiveStatus = await gmailService.checkArchivedStatus([email.id]);
+            if (!archiveStatus[email.id]) {
+              console.log(`Re-archiving previously imported email ${email.id}`);
+              const reArchived = await gmailService.archiveEmail(email.id);
+              if (reArchived) {
+                console.log(`✅ Successfully re-archived ${email.id}`);
+              } else {
+                console.log(`⚠️ Failed to re-archive ${email.id} - might be stale ID`);
+              }
+            }
+          } catch (reArchiveError) {
+            console.log(`⚠️ Could not re-archive ${email.id} - likely stale ID:`, reArchiveError);
+          }
+
+          skipped++;
+          continue;
+        }
 
         // Generate AI summary
         const aiSummary = await aiService.summarizeEmail({
@@ -131,21 +212,6 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
         });
 
         // Prepare email data for database
-        // Parse the email date string to ISO format for database
-        let receivedAtDate: string;
-        try {
-          const emailDate = new Date(email.date);
-          if (isNaN(emailDate.getTime())) {
-            console.warn(`⚠️ Invalid date format for email ${email.id}: ${email.date}, using current time`);
-            receivedAtDate = new Date().toISOString();
-          } else {
-            receivedAtDate = emailDate.toISOString();
-          }
-        } catch (dateError) {
-          console.warn(`⚠️ Error parsing date for email ${email.id}: ${email.date}, using current time`);
-          receivedAtDate = new Date().toISOString();
-        }
-
         const emailData: EmailInsertData = {
           gmail_message_id: email.id,
           gmail_thread_id: email.threadId,
@@ -159,7 +225,7 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
           has_attachments: email.hasAttachments || false,
           labels: email.labels || [],
           is_read: email.isRead || false,
-          received_at: receivedAtDate
+          received_at: parseEmailDate(email.date, email.id)
         };
 
         // Insert into database
@@ -176,63 +242,56 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
             errorCode: (dbError as any)?.code,
             errorDetails: (dbError as any)?.details
           });
-          
+
           // Continue processing - we'll skip this email
           // Don't archive since it wasn't stored in DB
           skipped++;
           continue;
         }
-        
+
         if (emailId) {
-                  // Archive in Gmail after successful database insert
-                  console.log(`📁 Attempting to archive email ${email.id} in Gmail...`);
-                  
-                  let isAlreadyArchived = false;
-                  try {
-                    // Check if email is already archived before attempting to archive
-                    const preArchiveStatus = await gmailService.checkArchivedStatus([email.id]);
-                    isAlreadyArchived = preArchiveStatus[email.id];
-                    
-                    if (isAlreadyArchived) {
-                      console.log(`✅ Email ${email.id} is already archived - skipping archive attempt`);
-                      archiveResults.success.push(email.id);
-                    } else {
-                      console.log(`📧 Email ${email.id} details:`, {
-                        subject: email.subject,
-                        from: email.from,
-                        labels: email.labels,
-                        isRead: email.isRead
-                      });
+          // Archive in Gmail after successful database insert
+          console.log(`📁 Attempting to archive email ${email.id} in Gmail...`);
 
-                      // Try to archive with detailed error handling
-                      const archiveResult = await gmailService.archiveEmailWithDetails(email.id);
-                      
-                      if (archiveResult.success) {
-                        console.log(`✅ Successfully archived email ${email.id}`);
-                        archiveResults.success.push(email.id);
-                      } else {
-                        console.log(`❌ Archive failed for ${email.id}:`, archiveResult.error);
-                        
-                        // If it's an "Invalid id value" error, the email ID is stale
-                        if (archiveResult.error?.message?.includes('Invalid id value')) {
-                          console.log(`⚠️ Email ${email.id} has stale ID - this is expected for older fetches`);
-                          // Don't count as failure since the email was processed successfully
-                          archiveResults.success.push(email.id);
-                        } else {
-                          // Other errors are real failures
-                          archiveResults.failed.push(email.id);
-                        }
-                      }
-                    }
-                  } catch (archiveError) {
-                    console.error(`❌ Archive error for ${email.id}:`, archiveError);
-                    archiveResults.failed.push(email.id);
-                  }
+          let isAlreadyArchived = false;
+          try {
+            // Check if email is already archived before attempting to archive
+            const preArchiveStatus = await gmailService.checkArchivedStatus([email.id]);
+            isAlreadyArchived = preArchiveStatus[email.id];
 
-                  imported++;
-                  
-                  // Add to response with AI summary
-                  const wasArchived = isAlreadyArchived || archiveResults.success.includes(email.id);
+            if (isAlreadyArchived) {
+              console.log(`✅ Email ${email.id} is already archived - skipping archive attempt`);
+              archiveResults.success.push(email.id);
+            } else {
+              // Try to archive with detailed error handling
+              const archiveResult = await gmailService.archiveEmailWithDetails(email.id);
+
+              if (archiveResult.success) {
+                console.log(`✅ Successfully archived email ${email.id}`);
+                archiveResults.success.push(email.id);
+              } else {
+                console.log(`❌ Archive failed for ${email.id}:`, archiveResult.error);
+
+                // If it's an "Invalid id value" error, the email ID is stale
+                if (archiveResult.error?.message?.includes('Invalid id value')) {
+                  console.log(`⚠️ Email ${email.id} has stale ID - this is expected for older fetches`);
+                  // Don't count as failure since the email was processed successfully
+                  archiveResults.success.push(email.id);
+                } else {
+                  // Other errors are real failures
+                  archiveResults.failed.push(email.id);
+                }
+              }
+            }
+          } catch (archiveError) {
+            console.error(`❌ Archive error for ${email.id}:`, archiveError);
+            archiveResults.failed.push(email.id);
+          }
+
+          imported++;
+
+          // Add to response with AI summary
+          const wasArchived = isAlreadyArchived || archiveResults.success.includes(email.id);
           processedEmails.push({
             ...email,
             aiSummary,
@@ -252,22 +311,9 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined
         });
-        
+
         archiveResults.failed.push(email.id);
-        
-        // Still add to response with fallback AI summary
-        processedEmails.push({
-          ...email,
-          aiSummary: {
-            summary: `Email from ${email.from} about "${email.subject}"`,
-            keyPoints: [],
-            sentiment: 'neutral' as const,
-            category: 'General',
-            actionRequired: false,
-            confidence: 0.1
-          },
-          error: error instanceof Error ? error.message : 'Processing failed'
-        });
+        skipped++;
       }
     }
 
@@ -281,7 +327,7 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
         skipped,
         archived: archiveResults.success.length,
         archiveFailed: archiveResults.failed.length,
-        archiveFailedIds: archiveResults.failed, // Include the failed IDs for debugging
+        archiveFailedIds: archiveResults.failed,
         fetchedAt: new Date().toISOString(),
         aiProcessed: true,
         databaseStored: true
@@ -290,31 +336,7 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
 
   } catch (error) {
     console.error('Error importing emails:', error);
-    
-    // Handle specific Gmail API errors
-    if (error instanceof Error) {
-      if (error.message.includes('invalid_grant') || error.message.includes('Token has been expired')) {
-        return res.status(401).json({
-          success: false,
-          message: 'Gmail access expired. Please re-authenticate.',
-          code: 'TOKEN_EXPIRED'
-        });
-      }
-      
-      if (error.message.includes('insufficient authentication scopes')) {
-        return res.status(403).json({
-          success: false,
-          message: 'Insufficient Gmail permissions. Please re-authenticate.',
-          code: 'INSUFFICIENT_SCOPE'
-        });
-      }
-    }
-
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to import emails from Gmail',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
+    handleGmailError(error, res);
   }
 });
 
@@ -323,30 +345,9 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
  */
 router.get('/gmail-profile', requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user as any;
-    
-    // Get user's OAuth tokens
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('access_token, refresh_token')
-      .eq('id', user.id)
-      .single();
-
-    if (userError || !userData?.access_token) {
-      return res.status(400).json({
-        success: false,
-        message: 'Gmail access token not found'
-      });
-    }
-
-    // Initialize Gmail service
-    const gmailService = new GmailService();
-    gmailService.setCredentials({
-      access_token: userData.access_token,
-      refresh_token: userData.refresh_token
-    });
-
-    // Get profile
+    const user = req.user as User;
+    const userData = await getUserTokens(user.id);
+    const gmailService = initializeGmailService(userData);
     const profile = await gmailService.getProfile();
 
     return res.json({
@@ -356,11 +357,7 @@ router.get('/gmail-profile', requireAuth, async (req: Request, res: Response) =>
 
   } catch (error) {
     console.error('Error fetching Gmail profile:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch Gmail profile',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
+    handleGmailError(error, res);
   }
 });
 
@@ -369,7 +366,7 @@ router.get('/gmail-profile', requireAuth, async (req: Request, res: Response) =>
  */
 router.get('/imported', requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user as any;
+    const user = req.user as User;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
 
@@ -405,7 +402,7 @@ router.get('/imported', requireAuth, async (req: Request, res: Response) => {
  */
 router.get('/stats', requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user as any;
+    const user = req.user as User;
     const emailDbService = new EmailDbService();
     const stats = await emailDbService.getImportStats(user.id);
 
@@ -424,13 +421,17 @@ router.get('/stats', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// ============================================================================
+// Test/Debug Routes
+// ============================================================================
+
 /**
  * Debug endpoint to check user status
  */
 router.get('/debug-user', requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user as any;
-    
+    const user = req.user as User;
+
     console.log('🔍 DEBUG: Session user:', {
       id: user?.id,
       email: user?.email,
@@ -488,30 +489,11 @@ router.get('/debug-user', requireAuth, async (req: Request, res: Response) => {
  */
 router.get('/test-gmail', requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user as any;
-    
+    const user = req.user as User;
     console.log('🧪 Testing Gmail API connection...');
 
-    // Get user's OAuth tokens from database
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('access_token, refresh_token')
-      .eq('id', user.id)
-      .single();
-
-    if (userError || !userData?.access_token) {
-      return res.status(400).json({
-        success: false,
-        message: 'No access token found'
-      });
-    }
-
-    // Test Gmail service
-    const gmailService = new GmailService();
-    gmailService.setCredentials({
-      access_token: userData.access_token,
-      refresh_token: userData.refresh_token
-    });
+    const userData = await getUserTokens(user.id);
+    const gmailService = initializeGmailService(userData);
 
     console.log('🔍 Testing Gmail profile...');
     const profile = await gmailService.getProfile();
@@ -554,30 +536,11 @@ router.get('/test-gmail', requireAuth, async (req: Request, res: Response) => {
  */
 router.post('/test-db-insert', requireAuth, async (req: Request, res: Response) => {
   try {
-    const user = req.user as any;
-    
+    const user = req.user as User;
     console.log('🧪 Testing database insertion...');
 
-    // Get user's OAuth tokens
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('access_token, refresh_token')
-      .eq('id', user.id)
-      .single();
-
-    if (userError || !userData?.access_token) {
-      return res.status(400).json({
-        success: false,
-        message: 'No access token found'
-      });
-    }
-
-    // Fetch one email
-    const gmailService = new GmailService();
-    gmailService.setCredentials({
-      access_token: userData.access_token,
-      refresh_token: userData.refresh_token
-    });
+    const userData = await getUserTokens(user.id);
+    const gmailService = initializeGmailService(userData);
 
     const emails = await gmailService.fetchLatest10Emails();
     if (emails.length === 0) {
@@ -597,7 +560,7 @@ router.post('/test-db-insert', requireAuth, async (req: Request, res: Response) 
 
     // Test database insertion
     const emailDbService = new EmailDbService();
-    
+
     // Check if already exists
     const exists = await emailDbService.emailExists(user.id, testEmail.id);
     console.log('🔍 Email exists check:', exists);
@@ -611,25 +574,25 @@ router.post('/test-db-insert', requireAuth, async (req: Request, res: Response) 
       });
     }
 
-    // Try to insert
-    const emailData = {
+    // Prepare email data (using same parsing logic as import-latest)
+    const emailData: EmailInsertData = {
       gmail_message_id: testEmail.id,
       gmail_thread_id: testEmail.threadId,
-      subject: testEmail.subject,
-      sender_email: testEmail.from,
-      sender_name: testEmail.from.split('<')[0].trim().replace(/"/g, ''),
-      recipient_email: testEmail.to,
-      body_text: testEmail.bodyText,
-      body_html: testEmail.bodyHtml,
-      has_attachments: testEmail.hasAttachments,
-      labels: testEmail.labels,
-      is_read: testEmail.isRead,
-      received_at: testEmail.date
+      subject: testEmail.subject || '(No Subject)',
+      sender_email: testEmail.from || '',
+      sender_name: testEmail.from?.split('<')[0]?.trim().replace(/"/g, '') || testEmail.from || '',
+      recipient_email: testEmail.to || '',
+      body_text: testEmail.bodyText || testEmail.body || '',
+      body_html: testEmail.bodyHtml || '',
+      has_attachments: testEmail.hasAttachments || false,
+      labels: testEmail.labels || [],
+      is_read: testEmail.isRead || false,
+      received_at: parseEmailDate(testEmail.date, testEmail.id)
     };
 
     console.log('🔍 Attempting database insert...');
     const insertedId = await emailDbService.insertEmail(user.id, emailData);
-    
+
     return res.json({
       success: true,
       message: 'Database insertion test completed',
@@ -652,163 +615,126 @@ router.post('/test-db-insert', requireAuth, async (req: Request, res: Response) 
   }
 });
 
-        /**
-         * Test archiving a specific email by ID
-         */
-        router.post('/test-archive/:emailId', requireAuth, async (req: Request, res: Response) => {
-          try {
-            const user = req.user as any;
-            const emailId = req.params.emailId;
-            
-            console.log(`🧪 Testing archive for email ID: ${emailId}`);
+/**
+ * Test archiving a specific email by ID
+ */
+router.post('/test-archive/:emailId', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user as User;
+    const emailId = req.params.emailId;
 
-            // Get user's OAuth tokens
-            const { data: userData, error: userError } = await supabase
-              .from('users')
-              .select('access_token, refresh_token')
-              .eq('id', user.id)
-              .single();
+    console.log(`🧪 Testing archive for email ID: ${emailId}`);
 
-            if (userError || !userData?.access_token) {
-              return res.status(400).json({
-                success: false,
-                message: 'No access token found'
-              });
-            }
+    const userData = await getUserTokens(user.id);
+    const gmailService = initializeGmailService(userData);
 
-            // Initialize Gmail service
-            const gmailService = new GmailService();
-            gmailService.setCredentials({
-              access_token: userData.access_token,
-              refresh_token: userData.refresh_token
-            });
+    // Check current status
+    console.log(`🔍 Checking current status of email ${emailId}...`);
+    const currentStatus = await gmailService.checkArchivedStatus([emailId]);
+    console.log(`📊 Current archive status:`, currentStatus);
 
-            // Check current status
-            console.log(`🔍 Checking current status of email ${emailId}...`);
-            const currentStatus = await gmailService.checkArchivedStatus([emailId]);
-            console.log(`📊 Current archive status:`, currentStatus);
+    // Try to archive with detailed error info
+    console.log(`📁 Attempting to archive email ${emailId} with detailed error tracking...`);
+    const archiveResult = await gmailService.archiveEmailWithDetails(emailId);
 
-            // Try to archive with detailed error info
-            console.log(`📁 Attempting to archive email ${emailId} with detailed error tracking...`);
-            const archiveResult = await gmailService.archiveEmailWithDetails(emailId);
+    // Check status after attempt
+    const newStatus = await gmailService.checkArchivedStatus([emailId]);
+    console.log(`📊 Status after archive attempt:`, newStatus);
 
-            // Check status after attempt
-            const newStatus = await gmailService.checkArchivedStatus([emailId]);
-            console.log(`📊 Status after archive attempt:`, newStatus);
+    return res.json({
+      success: true,
+      emailId,
+      beforeArchive: currentStatus[emailId],
+      archiveAttemptSuccess: archiveResult.success,
+      archiveError: archiveResult.error || null,
+      afterArchive: newStatus[emailId],
+      message: archiveResult.success ? 'Archive successful' : 'Archive failed',
+      gmailApiError: archiveResult.error
+    });
 
-            return res.json({
-              success: true,
-              emailId,
-              beforeArchive: currentStatus[emailId],
-              archiveAttemptSuccess: archiveResult.success,
-              archiveError: archiveResult.error || null,
-              afterArchive: newStatus[emailId],
-              message: archiveResult.success ? 'Archive successful' : 'Archive failed',
-              gmailApiError: archiveResult.error // Include the detailed Gmail API error
-            });
+  } catch (error) {
+    console.error('❌ Archive test failed:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      details: error
+    });
+  }
+});
 
-          } catch (error) {
-            console.error('❌ Archive test failed:', error);
-            return res.status(500).json({
-              success: false,
-              error: error instanceof Error ? error.message : 'Unknown error',
-              details: error
-            });
-          }
-        });
+/**
+ * Test Gmail API permissions and get a fresh email ID
+ */
+router.get('/test-permissions', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user as User;
+    console.log('🧪 Testing Gmail API permissions...');
 
-        /**
-         * Test Gmail API permissions and get a fresh email ID
-         */
-        router.get('/test-permissions', requireAuth, async (req: Request, res: Response) => {
-          try {
-            const user = req.user as any;
-            
-            console.log('🧪 Testing Gmail API permissions...');
+    const userData = await getUserTokens(user.id);
+    const gmailService = initializeGmailService(userData);
 
-            // Get user's OAuth tokens
-            const { data: userData, error: userError } = await supabase
-              .from('users')
-              .select('access_token, refresh_token')
-              .eq('id', user.id)
-              .single();
+    // Test 1: Get profile (readonly permission)
+    console.log('🔍 Testing readonly permission...');
+    const profile = await gmailService.getProfile();
+    console.log('✅ Readonly permission works');
 
-            if (userError || !userData?.access_token) {
-              return res.status(400).json({
-                success: false,
-                message: 'No access token found'
-              });
-            }
+    // Test 2: Get latest emails (readonly permission)
+    console.log('🔍 Testing email fetch...');
+    const emails = await gmailService.fetchLatest10Emails();
+    console.log(`✅ Fetched ${emails.length} emails`);
 
-            // Initialize Gmail service
-            const gmailService = new GmailService();
-            gmailService.setCredentials({
-              access_token: userData.access_token,
-              refresh_token: userData.refresh_token
-            });
+    if (emails.length === 0) {
+      return res.json({
+        success: false,
+        message: 'No emails found to test with',
+        profile: profile.emailAddress
+      });
+    }
 
-            // Test 1: Get profile (readonly permission)
-            console.log('🔍 Testing readonly permission...');
-            const profile = await gmailService.getProfile();
-            console.log('✅ Readonly permission works');
+    // Get the first email that's currently in INBOX
+    const inboxEmail = emails.find(email => email.labels.includes('INBOX'));
 
-            // Test 2: Get latest emails (readonly permission)
-            console.log('🔍 Testing email fetch...');
-            const emails = await gmailService.fetchLatest10Emails();
-            console.log(`✅ Fetched ${emails.length} emails`);
+    if (!inboxEmail) {
+      return res.json({
+        success: false,
+        message: 'No emails found in INBOX to test with',
+        totalEmails: emails.length,
+        profile: profile.emailAddress
+      });
+    }
 
-            if (emails.length === 0) {
-              return res.json({
-                success: false,
-                message: 'No emails found to test with',
-                profile: profile.emailAddress
-              });
-            }
+    // Test 3: Check if we can read the email details (should work)
+    console.log(`🔍 Testing email details for ${inboxEmail.id}...`);
+    const currentStatus = await gmailService.checkArchivedStatus([inboxEmail.id]);
+    console.log(`✅ Can read email status: ${currentStatus[inboxEmail.id] ? 'archived' : 'in inbox'}`);
 
-            // Get the first email that's currently in INBOX
-            const inboxEmail = emails.find(email => email.labels.includes('INBOX'));
-            
-            if (!inboxEmail) {
-              return res.json({
-                success: false,
-                message: 'No emails found in INBOX to test with',
-                totalEmails: emails.length,
-                profile: profile.emailAddress
-              });
-            }
+    return res.json({
+      success: true,
+      profile: profile.emailAddress,
+      totalEmails: emails.length,
+      testEmail: {
+        id: inboxEmail.id,
+        subject: inboxEmail.subject,
+        from: inboxEmail.from,
+        labels: inboxEmail.labels,
+        isInInbox: inboxEmail.labels.includes('INBOX'),
+        currentlyArchived: currentStatus[inboxEmail.id]
+      },
+      permissions: {
+        canReadProfile: true,
+        canReadEmails: true,
+        canReadEmailStatus: true
+      }
+    });
 
-            // Test 3: Check if we can read the email details (should work)
-            console.log(`🔍 Testing email details for ${inboxEmail.id}...`);
-            const currentStatus = await gmailService.checkArchivedStatus([inboxEmail.id]);
-            console.log(`✅ Can read email status: ${currentStatus[inboxEmail.id] ? 'archived' : 'in inbox'}`);
+  } catch (error) {
+    console.error('❌ Permission test failed:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      details: error
+    });
+  }
+});
 
-            return res.json({
-              success: true,
-              profile: profile.emailAddress,
-              totalEmails: emails.length,
-              testEmail: {
-                id: inboxEmail.id,
-                subject: inboxEmail.subject,
-                from: inboxEmail.from,
-                labels: inboxEmail.labels,
-                isInInbox: inboxEmail.labels.includes('INBOX'),
-                currentlyArchived: currentStatus[inboxEmail.id]
-              },
-              permissions: {
-                canReadProfile: true,
-                canReadEmails: true,
-                canReadEmailStatus: true
-              }
-            });
-
-          } catch (error) {
-            console.error('❌ Permission test failed:', error);
-            return res.status(500).json({
-              success: false,
-              error: error instanceof Error ? error.message : 'Unknown error',
-              details: error
-            });
-          }
-        });
-
-        export default router;
+export default router;
