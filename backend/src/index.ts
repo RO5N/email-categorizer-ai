@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import session from 'express-session';
 import cors from 'cors';
 import passport from './auth/passport';
+import sessionStore from './sessionStore';
 import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
 import emailRoutes from './routes/emails';
@@ -26,15 +27,17 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session configuration
+// Session configuration with PostgreSQL store
 app.use(session({
+  store: sessionStore, // Use PostgreSQL session store instead of memory
   secret: process.env.SESSION_SECRET || 'your-secret-key-change-this',
   resave: false,
   saveUninitialized: false,
   cookie: {
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' // Required for cross-origin in production
   }
 }));
 
@@ -87,11 +90,23 @@ app.get('/', (req: Request, res: Response) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📋 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔐 Google OAuth: http://localhost:${PORT}/api/auth/google`);
-});
-
+// Export handler for Vercel serverless functions
+// Vercel expects a function that handles (req, res)
 export default app;
+
+// Also export as handler function for Vercel compatibility
+export const handler = app;
+
+// Start server only in local development
+// In production/Vercel, the serverless function will handle requests
+// Check if we're running directly (not imported as a module)
+const isDevelopment = process.env.NODE_ENV !== 'production';
+const isVercel = process.env.VERCEL === '1';
+
+if (isDevelopment && !isVercel) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`📋 Health check: http://localhost:${PORT}/health`);
+    console.log(`🔐 Google OAuth: http://localhost:${PORT}/api/auth/google`);
+  });
+}

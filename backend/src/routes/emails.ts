@@ -336,7 +336,7 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
 
   } catch (error) {
     console.error('Error importing emails:', error);
-    handleGmailError(error, res);
+    return handleGmailError(error, res);
   }
 });
 
@@ -357,7 +357,7 @@ router.get('/gmail-profile', requireAuth, async (req: Request, res: Response) =>
 
   } catch (error) {
     console.error('Error fetching Gmail profile:', error);
-    handleGmailError(error, res);
+    return handleGmailError(error, res);
   }
 });
 
