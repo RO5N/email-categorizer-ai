@@ -16,6 +16,7 @@
     "express": "^4.19.2",
     "express-session": "^1.18.2",
     "googleapis": "^164.1.0",
+    "openai": "^6.7.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0"
   },

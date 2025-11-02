@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { GmailService } from '../services/gmailService';
+import { AIService } from '../services/aiService';
 import { supabase } from '../db';
 
 const router = Router();
@@ -43,13 +44,48 @@ router.post('/import-latest', requireAuth, async (req: Request, res: Response) =
     // Fetch latest 10 emails
     const emails = await gmailService.fetchLatest10Emails();
 
+    // Generate AI summaries for emails
+    const aiService = new AIService();
+    const emailsWithSummaries = await Promise.all(
+      emails.map(async (email) => {
+        try {
+          const aiSummary = await aiService.summarizeEmail({
+            subject: email.subject,
+            from: email.from,
+            to: email.to,
+            body: email.bodyText || email.body, // Use text version for AI processing
+            snippet: email.snippet
+          });
+
+          return {
+            ...email,
+            aiSummary
+          };
+        } catch (error) {
+          console.error(`Failed to generate AI summary for email ${email.id}:`, error);
+          return {
+            ...email,
+            aiSummary: {
+              summary: `Email from ${email.from} about "${email.subject}"`,
+              keyPoints: [],
+              sentiment: 'neutral' as const,
+              category: 'General',
+              actionRequired: false,
+              confidence: 0.1
+            }
+          };
+        }
+      })
+    );
+
     return res.json({
       success: true,
-      message: `Successfully fetched ${emails.length} emails`,
+      message: `Successfully fetched and analyzed ${emails.length} emails`,
       data: {
-        emails,
+        emails: emailsWithSummaries,
         count: emails.length,
-        fetchedAt: new Date().toISOString()
+        fetchedAt: new Date().toISOString(),
+        aiProcessed: true
       }
     });
 

@@ -36,6 +36,15 @@ interface UserData {
   };
 }
 
+interface EmailSummary {
+  summary: string;
+  keyPoints: string[];
+  sentiment: 'positive' | 'neutral' | 'negative';
+  category: string;
+  actionRequired: boolean;
+  confidence: number;
+}
+
 interface EmailData {
   id: string;
   threadId: string;
@@ -44,9 +53,13 @@ interface EmailData {
   to: string;
   date: string;
   snippet: string;
+  body: string;
+  bodyHtml: string;
+  bodyText: string;
   isRead: boolean;
   hasAttachments: boolean;
   labels: string[];
+  aiSummary?: EmailSummary;
 }
 
 export default function Dashboard() {
@@ -242,10 +255,10 @@ export default function Dashboard() {
                 {importLoading ? (
                   <>
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    Importing...
+                    Importing & Analyzing...
                   </>
                 ) : (
-                  'Import Latest 10 Emails'
+                  '🤖 Import & AI Analyze 10 Emails'
                 )}
               </button>
             </div>

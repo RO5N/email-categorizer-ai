@@ -9,6 +9,9 @@ interface EmailData {
   to: string;
   date: string;
   snippet: string;
+  body: string;
+  bodyHtml: string;
+  bodyText: string;
   isRead: boolean;
   hasAttachments: boolean;
   labels: string[];
@@ -92,6 +95,9 @@ class GmailService {
       // Check for attachments
       const hasAttachments = this.hasAttachments(message.payload);
 
+      // Extract email body content
+      const emailContent = this.extractEmailContent(message.payload);
+
       return {
         id: message.id,
         threadId: message.threadId,
@@ -100,6 +106,9 @@ class GmailService {
         to: getHeader('To'),
         date: getHeader('Date'),
         snippet: message.snippet || '',
+        body: emailContent.text || emailContent.html || '',
+        bodyHtml: emailContent.html,
+        bodyText: emailContent.text,
         isRead,
         hasAttachments,
         labels: message.labelIds || [],
@@ -108,6 +117,76 @@ class GmailService {
       console.error('Error parsing email data:', error);
       return null;
     }
+  }
+
+  /**
+   * Extract email content (both HTML and text) from Gmail payload
+   */
+  private extractEmailContent(payload: any): { html: string; text: string } {
+    if (!payload) return { html: '', text: '' };
+
+    let htmlContent = '';
+    let textContent = '';
+
+    try {
+      // If payload has parts, extract both HTML and text
+      if (payload.parts) {
+        for (const part of payload.parts) {
+          if (part.mimeType === 'text/plain' && part.body?.data) {
+            textContent = Buffer.from(part.body.data, 'base64').toString('utf-8');
+          } else if (part.mimeType === 'text/html' && part.body?.data) {
+            htmlContent = Buffer.from(part.body.data, 'base64').toString('utf-8');
+          }
+        }
+
+        // Check nested parts (multipart/alternative, etc.)
+        if (!htmlContent && !textContent) {
+          for (const part of payload.parts) {
+            if (part.parts) {
+              const nestedContent = this.extractEmailContent(part);
+              if (!htmlContent && nestedContent.html) htmlContent = nestedContent.html;
+              if (!textContent && nestedContent.text) textContent = nestedContent.text;
+            }
+          }
+        }
+      }
+
+      // If no parts, check if body data is directly available
+      if (!htmlContent && !textContent && payload.body?.data) {
+        const content = Buffer.from(payload.body.data, 'base64').toString('utf-8');
+        if (payload.mimeType === 'text/html') {
+          htmlContent = content;
+        } else {
+          textContent = content;
+        }
+      }
+
+      // If we only have HTML, generate text version for AI processing
+      if (htmlContent && !textContent) {
+        textContent = this.stripHtmlTags(htmlContent);
+      }
+
+      return { html: htmlContent, text: textContent };
+    } catch (error) {
+      console.error('Error extracting email content:', error);
+      return { html: '', text: '' };
+    }
+  }
+
+  /**
+   * Strip HTML tags from content
+   */
+  private stripHtmlTags(html: string): string {
+    return html
+      .replace(/<[^>]*>/g, '') // Remove HTML tags
+      .replace(/&nbsp;/g, ' ') // Replace &nbsp; with space
+      .replace(/&amp;/g, '&') // Replace &amp; with &
+      .replace(/&lt;/g, '<') // Replace &lt; with <
+      .replace(/&gt;/g, '>') // Replace &gt; with >
+      .replace(/&quot;/g, '"') // Replace &quot; with "
+      .replace(/&#39;/g, "'") // Replace &#39; with '
+      .replace(/\s+/g, ' ') // Replace multiple whitespace with single space
+      .trim();
   }
 
   /**
