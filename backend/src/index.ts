@@ -5,6 +5,7 @@ import cors from 'cors';
 import passport from './auth/passport';
 import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
+import emailRoutes from './routes/emails';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -14,8 +15,8 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://localhost:3002', 
-    process.env.FRONTEND_URL
-  ].filter(Boolean),
+    process.env.FRONTEND_URL || 'http://localhost:3000'
+  ].filter(Boolean) as string[],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -45,6 +46,7 @@ app.use(passport.session());
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/emails', emailRoutes);
 
 // Health check route
 app.get('/health', (req: Request, res: Response) => {
@@ -74,6 +76,10 @@ app.get('/', (req: Request, res: Response) => {
         userData: '/api/dashboard/user-data',
         profile: '/api/dashboard/profile',
         public: '/api/dashboard/public'
+      },
+      emails: {
+        importLatest: '/api/emails/import-latest',
+        gmailProfile: '/api/emails/gmail-profile'
       }
     }
   });

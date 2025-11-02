@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import EmailTable from '../../components/EmailTable';
 
 interface UserData {
   success: boolean;
@@ -35,10 +36,26 @@ interface UserData {
   };
 }
 
+interface EmailData {
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  to: string;
+  date: string;
+  snippet: string;
+  isRead: boolean;
+  hasAttachments: boolean;
+  labels: string[];
+}
+
 export default function Dashboard() {
   const [userData, setUserData] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [emails, setEmails] = useState<EmailData[]>([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchUserData();
@@ -84,6 +101,35 @@ export default function Dashboard() {
     const diffInDays = Math.floor(diffInHours / 24);
     if (diffInDays === 1) return '1 day ago';
     return `${diffInDays} days ago`;
+  };
+
+  const importLatestEmails = async () => {
+    setImportLoading(true);
+    setImportError(null);
+    
+    try {
+      const response = await fetch('http://localhost:3001/api/emails/import-latest', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to import emails');
+      }
+
+      const data = await response.json();
+      setEmails(data.data.emails);
+      
+    } catch (error) {
+      console.error('Error importing emails:', error);
+      setImportError(error instanceof Error ? error.message : 'Failed to import emails');
+    } finally {
+      setImportLoading(false);
+    }
   };
 
   if (loading) {
@@ -180,6 +226,43 @@ export default function Dashboard() {
                 {formatTimeAgo(userData.dummyData.stats.lastSync)}
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Email Import Section */}
+        <div className="mb-8">
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold">📧 Gmail Import</h2>
+              <button
+                onClick={importLatestEmails}
+                disabled={importLoading}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold py-2 px-4 rounded-lg transition duration-200 flex items-center"
+              >
+                {importLoading ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Importing...
+                  </>
+                ) : (
+                  'Import Latest 10 Emails'
+                )}
+              </button>
+            </div>
+            
+            {importError && (
+              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                <div className="flex items-center">
+                  <div className="text-red-600 text-xl mr-3">⚠️</div>
+                  <div>
+                    <h3 className="text-red-800 font-semibold">Import Error</h3>
+                    <p className="text-red-700 text-sm">{importError}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <EmailTable emails={emails} loading={importLoading} />
           </div>
         </div>
 
