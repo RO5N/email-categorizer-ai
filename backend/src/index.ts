@@ -79,7 +79,9 @@ app.get('/', (req: Request, res: Response) => {
       },
       emails: {
         importLatest: '/api/emails/import-latest',
-        gmailProfile: '/api/emails/gmail-profile'
+        gmailProfile: '/api/emails/gmail-profile',
+        imported: '/api/emails/imported',
+        stats: '/api/emails/stats'
       }
     }
   });

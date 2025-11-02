@@ -95,7 +95,7 @@ export default function EmailRenderer({ htmlContent, textContent, fallbackConten
       </div>
 
       {/* Expand/Collapse Button */}
-      {(htmlContent || textContent) && (htmlContent?.length > 1000 || textContent?.length > 1000) && (
+      {(htmlContent || textContent) && ((htmlContent?.length || 0) > 1000 || (textContent?.length || 0) > 1000) && (
         <button
           onClick={() => setIsExpanded(!isExpanded)}
           className="text-blue-600 hover:text-blue-800 text-sm font-medium"

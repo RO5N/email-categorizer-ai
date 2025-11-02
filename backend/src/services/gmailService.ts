@@ -207,6 +207,196 @@ class GmailService {
   }
 
   /**
+   * Archive emails in Gmail (remove from inbox)
+   */
+  async archiveEmails(messageIds: string[]): Promise<{ success: string[]; failed: string[] }> {
+    try {
+      const gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
+      const success: string[] = [];
+      const failed: string[] = [];
+
+      // Archive emails in batches to avoid rate limits
+      const batchSize = 10;
+      for (let i = 0; i < messageIds.length; i += batchSize) {
+        const batch = messageIds.slice(i, i + batchSize);
+        
+        const batchPromises = batch.map(async (messageId) => {
+          try {
+            console.log(`🔍 Attempting to modify labels for email ${messageId}...`);
+            const response = await gmail.users.messages.modify({
+              userId: 'me',
+              id: messageId,
+              requestBody: {
+                removeLabelIds: ['INBOX'] // Remove from inbox = archive
+              }
+            });
+            console.log(`✅ Successfully modified labels for email ${messageId}:`, response.data);
+            success.push(messageId);
+          } catch (error) {
+            console.error(`❌ Failed to archive email ${messageId}:`, error);
+            
+            // Extract detailed error information
+            const errorDetails = {
+              message: error instanceof Error ? error.message : String(error),
+              status: (error as any)?.status,
+              statusText: (error as any)?.statusText,
+              code: (error as any)?.code,
+              errors: (error as any)?.errors,
+              response: (error as any)?.response?.data,
+              config: (error as any)?.config,
+              request: (error as any)?.request ? 'Request made' : 'No request'
+            };
+            
+            console.error(`❌ Detailed error for ${messageId}:`, JSON.stringify(errorDetails, null, 2));
+            
+            // Check if it's a 400 error (Bad Request) which might indicate the email is already archived
+            if ((error as any)?.status === 400) {
+              console.log(`⚠️ Email ${messageId} returned 400 - might already be archived or have special restrictions`);
+            }
+            
+            failed.push(messageId);
+          }
+        });
+
+        await Promise.all(batchPromises);
+
+        // Add delay between batches to respect rate limits
+        if (i + batchSize < messageIds.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+
+      console.log(`Archived ${success.length} emails, failed ${failed.length}`);
+      return { success, failed };
+
+    } catch (error) {
+      console.error('Error archiving emails:', error);
+      throw new Error('Failed to archive emails in Gmail');
+    }
+  }
+
+  /**
+   * Archive a single email in Gmail
+   */
+  async archiveEmail(messageId: string): Promise<boolean> {
+    try {
+      console.log(`🔍 Archiving single email ${messageId}...`);
+      const result = await this.archiveEmails([messageId]);
+      const success = result.success.includes(messageId);
+      
+      if (success) {
+        console.log(`✅ Single email ${messageId} archived successfully`);
+      } else {
+        console.log(`❌ Single email ${messageId} archive failed`);
+      }
+      
+      return success;
+    } catch (error) {
+      console.error(`❌ Error archiving single email ${messageId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Archive a single email with detailed error response
+   */
+  async archiveEmailWithDetails(messageId: string): Promise<{ success: boolean; error?: any }> {
+    try {
+      console.log(`🔍 Archiving email ${messageId} with detailed logging...`);
+      
+      const gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
+      
+      const response = await gmail.users.messages.modify({
+        userId: 'me',
+        id: messageId,
+        requestBody: {
+          removeLabelIds: ['INBOX']
+        }
+      });
+      
+      console.log(`✅ Archive successful for ${messageId}:`, response.data);
+      return { success: true };
+      
+    } catch (error) {
+      console.error(`❌ Archive failed for ${messageId}:`, error);
+      
+      const errorDetails = {
+        message: error instanceof Error ? error.message : String(error),
+        status: (error as any)?.status,
+        statusText: (error as any)?.statusText,
+        code: (error as any)?.code,
+        errors: (error as any)?.errors,
+        response: (error as any)?.response?.data
+      };
+      
+      console.error(`❌ Detailed error:`, JSON.stringify(errorDetails, null, 2));
+      
+      return { 
+        success: false, 
+        error: errorDetails
+      };
+    }
+  }
+
+  /**
+   * Get current email details to verify it still exists
+   */
+  async getEmailDetails(messageId: string): Promise<any> {
+    try {
+      const gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
+      const response = await gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format: 'minimal'
+      });
+      return response.data;
+    } catch (error) {
+      console.error(`Failed to get email details for ${messageId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if emails are archived in Gmail
+   */
+  async checkArchivedStatus(messageIds: string[]): Promise<Record<string, boolean>> {
+    try {
+      const gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
+      const status: Record<string, boolean> = {};
+
+      // Check in batches
+      const batchSize = 10;
+      for (let i = 0; i < messageIds.length; i += batchSize) {
+        const batch = messageIds.slice(i, i + batchSize);
+        
+        const batchPromises = batch.map(async (messageId) => {
+          try {
+            const response = await gmail.users.messages.get({
+              userId: 'me',
+              id: messageId,
+              format: 'minimal'
+            });
+            
+            // Email is archived if it doesn't have INBOX label
+            const isArchived = !response.data.labelIds?.includes('INBOX');
+            status[messageId] = isArchived;
+          } catch (error) {
+            console.error(`Failed to check status for email ${messageId}:`, error);
+            status[messageId] = false;
+          }
+        });
+
+        await Promise.all(batchPromises);
+      }
+
+      return status;
+    } catch (error) {
+      console.error('Error checking archived status:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get user's Gmail profile info
    */
   async getProfile() {

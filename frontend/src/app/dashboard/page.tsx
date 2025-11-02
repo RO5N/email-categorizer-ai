@@ -69,6 +69,12 @@ export default function Dashboard() {
   const [emails, setEmails] = useState<EmailData[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [importStats, setImportStats] = useState<{
+    imported: number;
+    skipped: number;
+    archived: number;
+    archiveFailed: number;
+  } | null>(null);
 
   useEffect(() => {
     fetchUserData();
@@ -136,6 +142,16 @@ export default function Dashboard() {
 
       const data = await response.json();
       setEmails(data.data.emails);
+      
+      // Set import statistics
+      if (data.data.imported !== undefined) {
+        setImportStats({
+          imported: data.data.imported,
+          skipped: data.data.skipped,
+          archived: data.data.archived,
+          archiveFailed: data.data.archiveFailed
+        });
+      }
       
     } catch (error) {
       console.error('Error importing emails:', error);
@@ -271,6 +287,35 @@ export default function Dashboard() {
                     <h3 className="text-red-800 font-semibold">Import Error</h3>
                     <p className="text-red-700 text-sm">{importError}</p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {importStats && (
+              <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                <div className="flex items-center mb-2">
+                  <div className="text-green-600 text-xl mr-3">✅</div>
+                  <h3 className="text-green-800 font-semibold">Import Complete</h3>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-green-700">{importStats.imported}</div>
+                    <div className="text-green-600">Imported</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-blue-700">{importStats.archived}</div>
+                    <div className="text-blue-600">Archived</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-yellow-700">{importStats.skipped}</div>
+                    <div className="text-yellow-600">Skipped</div>
+                  </div>
+                  {importStats.archiveFailed > 0 && (
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-red-700">{importStats.archiveFailed}</div>
+                      <div className="text-red-600">Archive Failed</div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
