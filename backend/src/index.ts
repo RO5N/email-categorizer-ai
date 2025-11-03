@@ -11,6 +11,7 @@ import webhookRoutes from './routes/webhooks';
 import watchRoutes from './routes/watch';
 import aiRoutes from './routes/ai';
 import workerRoutes from './routes/workers';
+import categoryRoutes from './routes/categories';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -65,6 +66,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/watch', watchRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/workers', workerRoutes);
+app.use('/api/categories', categoryRoutes);
 
 // Health check route
 app.get('/health', (req: Request, res: Response) => {
