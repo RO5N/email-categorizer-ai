@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
+import { getApiUrl } from '../lib/config';
 
 interface AuthStatus {
   authenticated: boolean;
@@ -45,7 +46,7 @@ function AuthChecker() {
     try {
       setError(null);
       
-      const response = await fetch('http://localhost:3001/api/auth/status', {
+      const response = await fetch(getApiUrl('api/auth/status'), {
         method: 'GET',
         credentials: 'include',
         headers: {
@@ -75,13 +76,13 @@ function AuthChecker() {
   }, []);
 
   const handleLogin = () => {
-    window.location.href = 'http://localhost:3001/api/auth/google';
+    window.location.href = getApiUrl('api/auth/google');
   };
 
   const handleLogout = async () => {
     try {
       startTransition(async () => {
-        await fetch('http://localhost:3001/api/auth/logout', {
+        await fetch(getApiUrl('api/auth/logout'), {
           method: 'POST',
           credentials: 'include'
         });
@@ -195,12 +196,12 @@ function AuthChecker() {
                     >
                       View Dashboard
                     </a>
-                    <button
-                      onClick={() => window.open('http://localhost:3001/api/dashboard/user-data', '_blank')}
-                      className="block w-full bg-green-600 hover:bg-green-700 text-white text-center py-2 px-4 rounded-lg transition duration-200"
-                    >
-                      Test Protected API
-                    </button>
+                            <button
+                              onClick={() => window.open(getApiUrl('api/dashboard/user-data'), '_blank')}
+                              className="block w-full bg-green-600 hover:bg-green-700 text-white text-center py-2 px-4 rounded-lg transition duration-200"
+                            >
+                              Test Protected API
+                            </button>
                   </div>
                 </div>
               </div>

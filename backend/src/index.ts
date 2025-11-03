@@ -11,12 +11,17 @@ import emailRoutes from './routes/emails';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust proxy (required for Vercel/deployment behind proxy)
+// This allows Express to detect HTTPS from X-Forwarded-Proto header
+app.set('trust proxy', 1);
+
 // CORS configuration
 app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://localhost:3002', 
-    process.env.FRONTEND_URL || 'http://localhost:3000'
+    'https://www.bibliob.com',
+    'https://bibliob.com'
   ].filter(Boolean) as string[],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -34,10 +39,11 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: true, //false on dev
+    domain: '.bibliob.com',
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' // Required for cross-origin in production
+    sameSite: 'none' // Required for cross-origin in production lax on dev
   }
 }));
 

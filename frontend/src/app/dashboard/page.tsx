@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import EmailTable from '../../components/EmailTable';
+import { getApiUrl } from '../../lib/config';
 
 interface UserData {
   success: boolean;
@@ -82,7 +83,7 @@ export default function Dashboard() {
 
   const fetchUserData = async () => {
     try {
-      const response = await fetch('http://localhost:3001/api/dashboard/user-data', {
+      const response = await fetch(getApiUrl('api/dashboard/user-data'), {
         credentials: 'include'
       });
 
@@ -127,7 +128,7 @@ export default function Dashboard() {
     setImportError(null);
     
     try {
-      const response = await fetch('http://localhost:3001/api/emails/import-latest', {
+      const response = await fetch(getApiUrl('api/emails/import-latest'), {
         method: 'POST',
         credentials: 'include',
         headers: {
