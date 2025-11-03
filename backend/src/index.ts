@@ -7,6 +7,10 @@ import sessionStore from './sessionStore';
 import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
 import emailRoutes from './routes/emails';
+import webhookRoutes from './routes/webhooks';
+import watchRoutes from './routes/watch';
+import aiRoutes from './routes/ai';
+import workerRoutes from './routes/workers';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -29,8 +33,9 @@ app.use(cors({
 }));
 
 // Basic middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Increase JSON payload limit for Pub/Sub webhooks (though they're typically small)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Session configuration with PostgreSQL store
 app.use(session({
@@ -56,6 +61,10 @@ app.use(passport.session());
 app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/emails', emailRoutes);
+app.use('/api/webhooks', webhookRoutes);
+app.use('/api/watch', watchRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/workers', workerRoutes);
 
 // Health check route
 app.get('/health', (req: Request, res: Response) => {
@@ -91,6 +100,10 @@ app.get('/', (req: Request, res: Response) => {
         gmailProfile: '/api/emails/gmail-profile',
         imported: '/api/emails/imported',
         stats: '/api/emails/stats'
+      },
+      ai: {
+        testSummarize: '/api/ai/test-summarize',
+        testConnection: '/api/ai/test-connection'
       }
     }
   });

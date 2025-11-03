@@ -303,6 +303,35 @@ class EmailDbService {
   }
 
   /**
+   * Update email with AI summary (used for async AI processing)
+   */
+  async updateEmailAiSummary(userId: string, gmailMessageId: string, aiSummary: EmailSummary): Promise<boolean> {
+    try {
+      console.log(`Updating AI summary for email ${gmailMessageId}`);
+      
+      const { error } = await supabase
+        .from('emails')
+        .update({
+          ai_summary: aiSummary.summary,
+          ai_category_confidence: aiSummary.confidence,
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', userId)
+        .eq('gmail_message_id', gmailMessageId);
+
+      if (error) {
+        throw error;
+      }
+
+      console.log(`✅ Successfully updated AI summary for email ${gmailMessageId}`);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error updating AI summary for email ${gmailMessageId}:`, error);
+      return false;
+    }
+  }
+
+  /**
    * Get import statistics for user
    */
   async getImportStats(userId: string) {
