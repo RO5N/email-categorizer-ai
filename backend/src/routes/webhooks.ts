@@ -707,6 +707,7 @@ router.post('/gmail', captureRawBody, express.json({ limit: '10mb' }), async (re
     let imported = 0;
     let skipped = 0;
     let failed = 0;
+    const importedEmailIds: string[] = []; // Track successfully imported email IDs for archiving
 
     for (const email of newEmails) {
       try {
@@ -758,6 +759,7 @@ router.post('/gmail', captureRawBody, express.json({ limit: '10mb' }), async (re
         if (emailId) {
           console.log(`✅ [Webhook] Imported email ${email.id} (DB ID: ${emailId})`);
           imported++;
+          importedEmailIds.push(email.id); // Track for archiving
         } else {
           console.log(`⚠️  [Webhook] Insert returned null for email ${email.id} (likely duplicate)`);
           skipped++;
@@ -766,6 +768,29 @@ router.post('/gmail', captureRawBody, express.json({ limit: '10mb' }), async (re
       } catch (error) {
         console.error(`❌ [Webhook] Error processing email ${email.id}:`, error);
         failed++;
+      }
+    }
+
+    // Archive successfully imported emails in Gmail
+    let archived = 0;
+    let archiveFailed = 0;
+    
+    if (importedEmailIds.length > 0) {
+      console.log(`📦 [Webhook] Archiving ${importedEmailIds.length} imported email(s) in Gmail...`);
+      try {
+        const archiveResult = await gmailService.archiveEmails(importedEmailIds);
+        archived = archiveResult.success.length;
+        archiveFailed = archiveResult.failed.length;
+        
+        if (archived > 0) {
+          console.log(`✅ [Webhook] Successfully archived ${archived} email(s) in Gmail`);
+        }
+        if (archiveFailed > 0) {
+          console.error(`❌ [Webhook] Failed to archive ${archiveFailed} email(s) in Gmail`);
+        }
+      } catch (error) {
+        console.error('❌ [Webhook] Error archiving emails:', error);
+        archiveFailed = importedEmailIds.length;
       }
     }
 
@@ -791,18 +816,20 @@ router.post('/gmail', captureRawBody, express.json({ limit: '10mb' }), async (re
       }
     }
 
-    console.log(`✅ [Webhook] Processing complete: ${imported} imported, ${skipped} skipped, ${failed} failed`);
+    console.log(`✅ [Webhook] Processing complete: ${imported} imported, ${skipped} skipped, ${failed} failed, ${archived} archived, ${archiveFailed} archive failed`);
 
     // Acknowledge receipt immediately (important: Pub/Sub needs 200 response within deadline)
     res.status(200).json({ 
       success: true, 
-      message: 'Emails imported to database',
+      message: 'Emails imported to database and archived in Gmail',
       emailAddress,
       historyId,
       stats: {
         imported,
         skipped,
         failed,
+        archived,
+        archiveFailed,
         total: newEmails.length
       }
     });
