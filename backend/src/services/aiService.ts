@@ -161,6 +161,100 @@ Provide a helpful, concise summary that would help someone quickly understand th
   }
 
   /**
+   * Categorize an email into one of the user's categories
+   * @param emailData - Email content to categorize
+   * @param userCategories - Array of user's categories with name and description
+   * @returns Category ID if matched, null if no match
+   */
+  async categorizeEmail(
+    emailData: EmailSummaryRequest,
+    userCategories: Array<{ id: string; name: string; description: string }>
+  ): Promise<{ categoryId: string | null; confidence: number }> {
+    try {
+      if (userCategories.length === 0) {
+        return { categoryId: null, confidence: 0 };
+      }
+
+      const categoriesList = userCategories.map(cat => 
+        `- ${cat.name}: ${cat.description}`
+      ).join('\n');
+
+      const prompt = `
+You are an email categorization assistant. Analyze the following email and determine which category it belongs to from the user's custom categories.
+
+User's Categories:
+${categoriesList}
+
+Email Details:
+- From: ${emailData.from}
+- To: ${emailData.to}
+- Subject: ${emailData.subject}
+- Content: ${emailData.body.substring(0, 2000)}${emailData.body.length > 2000 ? '...' : ''}
+
+Instructions:
+1. Read the email content carefully
+2. Compare it against each category's description
+3. If the email matches a category's description, return that category's name
+4. If the email doesn't match any category, return "UNCATEGORIZED"
+5. Be strict - only categorize if there's a clear match
+
+Respond with JSON in this format:
+{
+  "categoryName": "Category Name" or "UNCATEGORIZED",
+  "confidence": 0.0-1.0,
+  "reasoning": "Brief explanation of why this category was chosen"
+}
+      `.trim();
+
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an email categorization assistant. Analyze emails and match them to user-defined categories. Only categorize if there is a clear match.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 200,
+        temperature: 0.3,
+        response_format: { type: 'json_object' }
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        return { categoryId: null, confidence: 0 };
+      }
+
+      const parsed = JSON.parse(response) as { categoryName: string; confidence: number; reasoning?: string };
+      
+      if (parsed.categoryName === 'UNCATEGORIZED' || !parsed.categoryName) {
+        return { categoryId: null, confidence: parsed.confidence || 0 };
+      }
+
+      // Find matching category ID
+      const matchedCategory = userCategories.find(
+        cat => cat.name.toLowerCase() === parsed.categoryName.toLowerCase()
+      );
+
+      if (matchedCategory) {
+        return {
+          categoryId: matchedCategory.id,
+          confidence: Math.min(Math.max(parsed.confidence || 0.5, 0), 1)
+        };
+      }
+
+      // Category name doesn't match any user category
+      return { categoryId: null, confidence: 0 };
+    } catch (error) {
+      console.error('Error categorizing email:', error);
+      return { categoryId: null, confidence: 0 };
+    }
+  }
+
+  /**
    * Test OpenAI connection
    */
   async testConnection(): Promise<boolean> {

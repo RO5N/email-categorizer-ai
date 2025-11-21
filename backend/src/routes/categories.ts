@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { supabase } from '../db';
 import { requireAuth } from '../middleware/auth';
+import { AIService } from '../services/aiService';
+import { EmailDbService } from '../services/emailDbService';
 
 const router = Router();
 
@@ -191,6 +193,206 @@ router.post('/', requireAuth, async (req: Request, res: Response): Promise<void>
 
   } catch (error) {
     console.error('Error in POST /api/categories:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+/**
+ * Recategorize uncategorized emails using AI
+ * POST /api/categories/recategorize
+ */
+router.post('/recategorize', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const user = req.user as any;
+
+    if (!user || !user.id) {
+      res.status(401).json({
+        success: false,
+        message: 'User not authenticated'
+      });
+      return;
+    }
+
+    console.log(`🤖 [Recategorize] Starting AI recategorization for user ${user.id}`);
+
+    // Get user's categories
+    const { data: categories, error: categoriesError } = await supabase
+      .from('categories')
+      .select('id, name, description')
+      .eq('user_id', user.id)
+      .eq('is_active', true);
+
+    if (categoriesError) {
+      console.error('Error fetching categories:', categoriesError);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch categories',
+        error: categoriesError.message
+      });
+      return;
+    }
+
+    if (!categories || categories.length === 0) {
+      res.status(400).json({
+        success: false,
+        message: 'No categories found. Please create categories first.'
+      });
+      return;
+    }
+
+    console.log(`🤖 [Recategorize] Found ${categories.length} categories`);
+
+    // Get all uncategorized emails (category_id IS NULL)
+    // Also get emails without AI summaries
+    const { data: uncategorizedEmails, error: emailsError } = await supabase
+      .from('emails')
+      .select('id, subject, sender_email, recipient_email, body_text, body_html, ai_summary')
+      .eq('user_id', user.id)
+      .is('category_id', null)
+      .eq('is_deleted', false)
+      .order('received_at', { ascending: false });
+
+    if (emailsError) {
+      console.error('Error fetching uncategorized emails:', emailsError);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to fetch uncategorized emails',
+        error: emailsError.message
+      });
+      return;
+    }
+
+    if (!uncategorizedEmails || uncategorizedEmails.length === 0) {
+      res.json({
+        success: true,
+        message: 'No uncategorized emails found',
+        stats: {
+          processed: 0,
+          categorized: 0,
+          keptUncategorized: 0,
+          failed: 0
+        }
+      });
+      return;
+    }
+
+    console.log(`🤖 [Recategorize] Found ${uncategorizedEmails.length} uncategorized emails`);
+
+    // Initialize services
+    const aiService = new AIService();
+    const emailDbService = new EmailDbService();
+
+    let categorized = 0;
+    let keptUncategorized = 0;
+    let failed = 0;
+    let summariesGenerated = 0;
+
+    // Process emails one by one
+    for (const email of uncategorizedEmails) {
+      try {
+        // Get email body (prefer text, fallback to HTML stripped)
+        const emailBody = email.body_text || 
+          (email.body_html ? email.body_html.replace(/<[^>]*>/g, '').substring(0, 2000) : '') ||
+          email.ai_summary ||
+          '';
+
+        // Generate AI summary if missing
+        let aiSummary = null;
+        if (!email.ai_summary) {
+          console.log(`🤖 [Recategorize] Generating AI summary for email ${email.id}`);
+          try {
+            aiSummary = await aiService.summarizeEmail({
+              subject: email.subject || '(No Subject)',
+              from: email.sender_email || '',
+              to: email.recipient_email || '',
+              body: emailBody,
+              snippet: email.subject || ''
+            });
+            summariesGenerated++;
+            console.log(`✅ [Recategorize] Generated AI summary for email ${email.id}`);
+          } catch (summaryError) {
+            console.error(`❌ [Recategorize] Failed to generate summary for email ${email.id}:`, summaryError);
+            // Continue with categorization even if summary fails
+          }
+        }
+
+        // Categorize using AI
+        const categorization = await aiService.categorizeEmail(
+          {
+            subject: email.subject || '(No Subject)',
+            from: email.sender_email || '',
+            to: email.recipient_email || '',
+            body: emailBody,
+            snippet: email.ai_summary || aiSummary?.summary || email.subject || ''
+          },
+          categories
+        );
+
+        // Prepare update data
+        const updateData: any = {
+          updated_at: new Date().toISOString()
+        };
+
+        // Add category if matched
+        if (categorization.categoryId) {
+          updateData.category_id = categorization.categoryId;
+        }
+
+        // Add AI summary if generated
+        if (aiSummary) {
+          updateData.ai_summary = aiSummary.summary;
+          updateData.ai_category_confidence = aiSummary.confidence;
+        }
+
+        // Update email
+        const { error: updateError } = await supabase
+          .from('emails')
+          .update(updateData)
+          .eq('id', email.id)
+          .eq('user_id', user.id);
+
+        if (updateError) {
+          console.error(`❌ [Recategorize] Failed to update email ${email.id}:`, updateError);
+          failed++;
+        } else {
+          if (categorization.categoryId) {
+            console.log(`✅ [Recategorize] Categorized email ${email.id} into category ${categorization.categoryId}`);
+            categorized++;
+          } else {
+            keptUncategorized++;
+            console.log(`⏭️  [Recategorize] Email ${email.id} kept uncategorized`);
+          }
+        }
+
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+      } catch (error) {
+        console.error(`❌ [Recategorize] Error processing email ${email.id}:`, error);
+        failed++;
+      }
+    }
+
+    console.log(`✅ [Recategorize] Complete: ${categorized} categorized, ${keptUncategorized} kept uncategorized, ${summariesGenerated} summaries generated, ${failed} failed`);
+
+    res.json({
+      success: true,
+      message: `Recategorization complete: ${categorized} categorized, ${keptUncategorized} kept uncategorized, ${summariesGenerated} summaries generated`,
+      stats: {
+        processed: uncategorizedEmails.length,
+        categorized,
+        keptUncategorized,
+        summariesGenerated,
+        failed
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in recategorize endpoint:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',

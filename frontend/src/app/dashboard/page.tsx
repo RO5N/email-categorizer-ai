@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import EmailTable from '../../components/EmailTable';
 import { getApiUrl } from '../../lib/config';
+import EmailRenderer from '../../components/EmailRenderer';
 
 interface UserData {
   success: boolean;
@@ -80,11 +81,25 @@ export default function Dashboard() {
   const [createCategoryName, setCreateCategoryName] = useState('');
   const [createCategoryDescription, setCreateCategoryDescription] = useState('');
   const [createCategoryLoading, setCreateCategoryLoading] = useState(false);
+  const [recategorizeLoading, setRecategorizeLoading] = useState(false);
+
+  // All emails table state
+  const [allEmails, setAllEmails] = useState<any[]>([]);
+  const [allEmailsLoading, setAllEmailsLoading] = useState(false);
+  const [allEmailsPage, setAllEmailsPage] = useState<number>(0);
+  const [allEmailsTotal, setAllEmailsTotal] = useState<number>(0);
+  const [viewingEmail, setViewingEmail] = useState<any | null>(null);
+  const [viewingEmailLoading, setViewingEmailLoading] = useState(false);
 
   useEffect(() => {
     fetchUserData();
     fetchCategories();
+    fetchAllEmails();
   }, []);
+
+  useEffect(() => {
+    fetchAllEmails();
+  }, [allEmailsPage]);
 
   const fetchUserData = async () => {
     try {
@@ -176,6 +191,47 @@ export default function Dashboard() {
     }
   };
 
+  const handleRecategorize = async () => {
+    if (uncategorizedCount === 0) {
+      alert('No uncategorized emails to recategorize.');
+      return;
+    }
+
+    if (!confirm(`Recategorize ${uncategorizedCount} uncategorized emails using AI?`)) {
+      return;
+    }
+
+    setRecategorizeLoading(true);
+    try {
+      const response = await fetch(getApiUrl('api/categories/recategorize'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to recategorize emails');
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        alert(`Recategorization complete!\n\n${data.message}\n\nProcessed: ${data.stats.processed}\nCategorized: ${data.stats.categorized}\nKept Uncategorized: ${data.stats.keptUncategorized}\nSummaries Generated: ${data.stats.summariesGenerated || 0}\nFailed: ${data.stats.failed}`);
+        
+        // Refresh categories (emails will auto-refresh via useEffect)
+        await fetchCategories();
+      }
+    } catch (error) {
+      console.error('Error recategorizing emails:', error);
+      alert(error instanceof Error ? error.message : 'Failed to recategorize emails');
+    } finally {
+      setRecategorizeLoading(false);
+    }
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleString();
   };
@@ -192,6 +248,73 @@ export default function Dashboard() {
     const diffInDays = Math.floor(diffInHours / 24);
     if (diffInDays === 1) return '1 day ago';
     return `${diffInDays} days ago`;
+  };
+
+  const fetchAllEmails = async () => {
+    try {
+      setAllEmailsLoading(true);
+      const limit = 10;
+      const offset = allEmailsPage * limit;
+      
+      const params = new URLSearchParams({
+        limit: limit.toString(),
+        offset: offset.toString()
+      });
+      // No categoryId filter - get all emails
+
+      const response = await fetch(getApiUrl(`api/emails/imported?${params.toString()}`), {
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/';
+          return;
+        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      if (data.success && data.data) {
+        const emails = data.data.emails || [];
+        // Debug: Log first email to check category structure
+        if (emails.length > 0) {
+          console.log('Sample email category data:', emails[0].categories, 'Full email:', emails[0]);
+        }
+        setAllEmails(emails);
+        setAllEmailsTotal(data.data.pagination?.total || 0);
+      }
+    } catch (error) {
+      console.error('Error fetching all emails:', error);
+    } finally {
+      setAllEmailsLoading(false);
+    }
+  };
+
+  const handleViewEmail = async (emailId: string) => {
+    setViewingEmailLoading(true);
+    try {
+      const response = await fetch(getApiUrl(`api/emails/${emailId}`), {
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch email');
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        console.log('Email data received:', data.data);
+        setViewingEmail(data.data);
+      } else {
+        throw new Error(data.message || 'Failed to fetch email');
+      }
+    } catch (error) {
+      console.error('Error fetching email:', error);
+      alert('Failed to load email content');
+    } finally {
+      setViewingEmailLoading(false);
+    }
   };
 
   const importLatestEmails = async () => {
@@ -294,6 +417,139 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* All Emails Table Section */}
+        <div className="mb-8">
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h2 className="text-2xl font-bold mb-4">All Emails</h2>
+            
+            {allEmailsLoading ? (
+              <div className="text-center py-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                <p className="mt-4 text-gray-600">Loading emails...</p>
+              </div>
+            ) : allEmails.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="text-gray-400 text-4xl mb-4">📬</div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">No Emails Found</h3>
+                <p className="text-gray-600">No emails have been imported yet.</p>
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AI Summary</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {allEmails.map((email) => (
+                        <tr key={email.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="text-sm font-medium text-gray-900">{email.sender_name || email.sender_email}</div>
+                            <div className="text-sm text-gray-500">{email.sender_email}</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-sm font-medium text-gray-900">{email.subject || '(No Subject)'}</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            {email.ai_summary ? (
+                              <div className="group relative">
+                                <div className="text-sm text-gray-600 truncate max-w-xs cursor-help">
+                                  {email.ai_summary.length > 50 
+                                    ? `${email.ai_summary.substring(0, 50)}...` 
+                                    : email.ai_summary}
+                                </div>
+                                <div className="absolute left-0 top-full mt-2 w-96 p-3 bg-gray-900 text-white text-sm rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible z-10 transition-all duration-200">
+                                  <div className="font-semibold mb-2">AI Summary:</div>
+                                  <div className="whitespace-normal">{email.ai_summary}</div>
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-sm text-gray-400 italic">No summary</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            {email.categories ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium"
+                                style={{
+                                  backgroundColor: `${email.categories.color}20`,
+                                  color: email.categories.color
+                                }}
+                              >
+                                <div
+                                  className="w-2 h-2 rounded-full"
+                                  style={{ backgroundColor: email.categories.color }}
+                                ></div>
+                                {email.categories.name}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                                <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                </svg>
+                                Uncategorized
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            {new Date(email.received_at).toLocaleDateString()}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <button
+                              onClick={() => handleViewEmail(email.id)}
+                              className="text-blue-600 hover:text-blue-900"
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination */}
+                <div className="mt-4 flex items-center justify-between">
+                  <div className="text-sm text-gray-700">
+                    Showing {allEmailsPage * 10 + 1} to {Math.min((allEmailsPage + 1) * 10, allEmailsTotal)} of {allEmailsTotal} emails
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setAllEmailsPage(Math.max(0, allEmailsPage - 1))}
+                      disabled={allEmailsPage === 0}
+                      className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                        allEmailsPage === 0
+                          ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      ← Previous
+                    </button>
+                    <button
+                      onClick={() => setAllEmailsPage(allEmailsPage + 1)}
+                      disabled={(allEmailsPage + 1) * 10 >= allEmailsTotal}
+                      className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                        (allEmailsPage + 1) * 10 >= allEmailsTotal
+                          ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
         {/* Email Import Section */}
         <div className="mb-8">
           <div className="bg-white rounded-lg shadow-md p-6">
@@ -392,8 +648,8 @@ export default function Dashboard() {
                 ))}
                 
                 {/* Uncategorized Category (virtual - always last) */}
-                <div className="border rounded-lg p-3 bg-gray-50 opacity-75" style={{ height: '60px' }}>
-                  <div className="flex justify-between items-center h-full">
+                <div className="border rounded-lg p-3 bg-gray-50 opacity-75">
+                  <div className="flex justify-between items-center mb-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <svg className="w-3 h-3 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -407,6 +663,27 @@ export default function Dashboard() {
                       {uncategorizedCount}
                     </span>
                   </div>
+                  {uncategorizedCount > 0 && (
+                    <button
+                      onClick={handleRecategorize}
+                      disabled={recategorizeLoading}
+                      className="w-full mt-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
+                    >
+                      {recategorizeLoading ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                          Categorizing...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                          </svg>
+                          Recategorize with AI
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
 
                 {/* Create Category Button */}
@@ -459,6 +736,99 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* View Email Modal */}
+      {viewingEmail && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b">
+              <h2 className="text-2xl font-bold">Email Details</h2>
+              <button
+                onClick={() => setViewingEmail(null)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {viewingEmailLoading ? (
+              <div className="flex items-center justify-center p-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <span className="ml-3 text-gray-600">Loading email...</span>
+              </div>
+            ) : (
+              <div className="overflow-y-auto p-6 flex-1">
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="font-medium text-gray-700">From:</span>
+                      <div className="text-gray-600 break-all">{viewingEmail.sender_email}</div>
+                      {viewingEmail.sender_name && (
+                        <div className="text-gray-500 text-xs">{viewingEmail.sender_name}</div>
+                      )}
+                    </div>
+                    <div>
+                      <span className="font-medium text-gray-700">To:</span>
+                      <div className="text-gray-600 break-all">{viewingEmail.recipient_email}</div>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <span className="font-medium text-gray-700">Subject:</span>
+                    <div className="text-gray-900">{viewingEmail.subject || '(No Subject)'}</div>
+                  </div>
+
+                  <div>
+                    <span className="font-medium text-gray-700">Date:</span>
+                    <div className="text-gray-600">{new Date(viewingEmail.received_at).toLocaleString()}</div>
+                  </div>
+
+                  {viewingEmail.categories && (
+                    <div>
+                      <span className="font-medium text-gray-700">Category:</span>
+                      <div className="mt-1">
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium"
+                          style={{
+                            backgroundColor: `${viewingEmail.categories.color}20`,
+                            color: viewingEmail.categories.color
+                          }}
+                        >
+                          <div
+                            className="w-2 h-2 rounded-full"
+                            style={{ backgroundColor: viewingEmail.categories.color }}
+                          ></div>
+                          {viewingEmail.categories.name}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {viewingEmail.ai_summary && (
+                    <div>
+                      <span className="font-medium text-gray-700">AI Summary:</span>
+                      <div className="text-gray-600 mt-1">{viewingEmail.ai_summary}</div>
+                    </div>
+                  )}
+
+                  <div>
+                    <span className="font-medium text-gray-700">Email Content:</span>
+                    <div className="mt-2">
+                      <EmailRenderer
+                        htmlContent={viewingEmail.body_html}
+                        textContent={viewingEmail.body_text}
+                        fallbackContent={viewingEmail.subject || 'No content available'}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Create Category Modal */}
       {showCreateModal && (

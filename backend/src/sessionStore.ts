@@ -53,10 +53,11 @@ const pool = new Pool({
 const PgSession = ConnectPgSimple(session);
 
 // Create and configure session store
+// CRITICAL: Set to false since table already exists - prevents timeout on each request
 const sessionStore = new PgSession({
   pool: pool,
   tableName: 'session', // Table name in database
-  createTableIfMissing: true, // Auto-create table if it doesn't exist
+  createTableIfMissing: false, // Table exists - don't check/create on each request
 });
 
 export default sessionStore;

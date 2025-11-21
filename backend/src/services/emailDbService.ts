@@ -229,28 +229,123 @@ class EmailDbService {
   }
 
   /**
-   * Get user's emails with pagination
+   * Get user's emails with pagination and optional category filter
    */
-  async getUserEmails(userId: string, limit: number = 50, offset: number = 0) {
+  async getUserEmails(userId: string, limit: number = 50, offset: number = 0, categoryId?: string) {
     try {
-      const { data, error } = await supabase
+      // Build query with category filter
+      let query = supabase
         .from('emails')
         .select(`
           *,
           categories(name, color)
         `)
         .eq('user_id', userId)
-        .eq('is_deleted', false)
-        .order('received_at', { ascending: false })
-        .range(offset, offset + limit - 1);
+        .eq('is_deleted', false);
+
+      // Apply category filter
+      if (categoryId === 'uncategorized') {
+        query = query.is('category_id', null);
+      } else if (categoryId === 'all') {
+        query = query.not('category_id', 'is', null);
+      } else if (categoryId) {
+        query = query.eq('category_id', categoryId);
+      }
+
+      // Get count
+      let countQuery = supabase
+        .from('emails')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .eq('is_deleted', false);
+
+      if (categoryId === 'uncategorized') {
+        countQuery = countQuery.is('category_id', null);
+      } else if (categoryId === 'all') {
+        countQuery = countQuery.not('category_id', 'is', null);
+      } else if (categoryId) {
+        countQuery = countQuery.eq('category_id', categoryId);
+      }
+
+      const [{ data: emails, error }, { count, error: countError }] = await Promise.all([
+        query.order('received_at', { ascending: false }).range(offset, offset + limit - 1),
+        countQuery
+      ]);
 
       if (error) {
         throw error;
       }
 
-      return data;
+      // Format categories data (Supabase returns it as an array or object depending on relationship)
+      const formattedEmails = (emails || []).map((email: any) => {
+        let categoryData = null;
+        
+        if (email.categories) {
+          // Handle array format (one-to-many or many-to-many)
+          if (Array.isArray(email.categories) && email.categories.length > 0) {
+            categoryData = { name: email.categories[0].name, color: email.categories[0].color };
+          }
+          // Handle object format (one-to-one relationship)
+          else if (email.categories.name && email.categories.color) {
+            categoryData = { name: email.categories.name, color: email.categories.color };
+          }
+        }
+        
+        return {
+          ...email,
+          categories: categoryData
+        };
+      });
+
+      return {
+        emails: formattedEmails,
+        total: count || 0
+      };
     } catch (error) {
       console.error('Error fetching user emails:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get single email by ID for viewing
+   */
+  async getEmailById(userId: string, emailId: string) {
+    try {
+      const { data: email, error } = await supabase
+        .from('emails')
+        .select(`
+          *,
+          categories(name, color)
+        `)
+        .eq('id', emailId)
+        .eq('user_id', userId)
+        .eq('is_deleted', false)
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      // Format categories data (Supabase returns it as an array or object depending on relationship)
+      let categoryData = null;
+      
+      if (email && email.categories) {
+        // Handle array format (one-to-many or many-to-many)
+        if (Array.isArray(email.categories) && email.categories.length > 0) {
+          categoryData = { name: email.categories[0].name, color: email.categories[0].color };
+        }
+        // Handle object format (one-to-one relationship)
+        else if (email.categories.name && email.categories.color) {
+          categoryData = { name: email.categories.name, color: email.categories.color };
+        }
+      }
+      
+      email.categories = categoryData;
+
+      return email;
+    } catch (error) {
+      console.error('Error fetching email by ID:', error);
       throw error;
     }
   }

@@ -367,22 +367,29 @@ router.get('/gmail-profile', requireAuth, async (req: Request, res: Response) =>
 router.get('/imported', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user as User;
-    const limit = parseInt(req.query.limit as string) || 50;
+    
+    // Parse pagination params
+    const limit = parseInt(req.query.limit as string) || 10;
     const offset = parseInt(req.query.offset as string) || 0;
+    const categoryId = req.query.categoryId as string | undefined;
+
+    // Validate limit (must be one of allowed values)
+    const allowedLimits = [5, 10, 15, 20, 25];
+    const validLimit = allowedLimits.includes(limit) ? limit : 10;
 
     const emailDbService = new EmailDbService();
-    const emails = await emailDbService.getUserEmails(user.id, limit, offset);
-    const stats = await emailDbService.getImportStats(user.id);
+    const result = await emailDbService.getUserEmails(user.id, validLimit, offset, categoryId);
 
     return res.json({
       success: true,
       data: {
-        emails,
-        stats,
+        emails: result.emails,
         pagination: {
-          limit,
+          limit: validLimit,
           offset,
-          hasMore: emails.length === limit
+          total: result.total,
+          hasMore: offset + validLimit < result.total,
+          hasPrevious: offset > 0
         }
       }
     });
@@ -733,6 +740,39 @@ router.get('/test-permissions', requireAuth, async (req: Request, res: Response)
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
       details: error
+    });
+  }
+});
+
+/**
+ * Get single email by ID for viewing - MUST be after all specific routes
+ */
+router.get('/:emailId', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.user as User;
+    const { emailId } = req.params;
+
+    const emailDbService = new EmailDbService();
+    const email = await emailDbService.getEmailById(user.id, emailId);
+
+    if (!email) {
+      return res.status(404).json({
+        success: false,
+        message: 'Email not found'
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: email
+    });
+
+  } catch (error) {
+    console.error('Error fetching email:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch email',
+      error: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
